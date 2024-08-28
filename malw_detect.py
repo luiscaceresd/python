@@ -1,4 +1,5 @@
-import argparse, os, magic, hashlib, pefile, yara
+import argparse, os, magic, hashlib, pefile, yara, vt, time, json
+from dotenv import load_dotenv
 
 def get_files(path):
   if os.path.isdir(path):
@@ -10,6 +11,15 @@ def get_files(path):
     return files
   if os.path.isfile(path):
     return [path]
+  
+def get_md5(path):
+    md5 = hashlib.md5()
+    with open(path, 'rb') as f:
+        chunk = f.read(4096)
+        while len(chunk) > 0:
+            md5.update(chunk)
+            chunk = f.read(4096)
+        return md5.hexdigest()
   
 def get_file_hashes(path):
   md5 = hashlib.md5()
@@ -37,11 +47,28 @@ def match_yara(file_path, rule_path):
   for m in matches:
     print(" [!] :", m.rule)
 
+def check_vt(path):
+    try:
+        api_key = os.getenv("vt_key")
+        client = vt.Client(api_key)
+        file_hash = get_md5(path)
+        res = client.get_object("/files/{}".format(file_hash))
+        return {
+            "found": True,
+            "malicious": res.last_analysis_stats['malicious'],
+            "classification": res.popular_threat_classification
+        }
+    except vt.error.APIError as e:
+        return {"found": False, "msg":e.message}
+
+
 if __name__ == "__main__":
+  load_dotenv()
   parser = argparse.ArgumentParser()
   parser.add_argument("path", help="The path to the corresponding file or directory")
   parser.add_argument("-s", "--file_summary", help="Get the file type and hashes", action="store_true")
   parser.add_argument("-y", "--yara_scan", help="Scan file or directory with Yara rule", metavar="YARA_RULE_PATH")
+  parser.add_argument("-vt", "--check_vt", help="Check VirusTotal based on md5 file hash", action="store_true")
   args = parser.parse_args()
 
   if not os.path.exists(args.path):
@@ -69,3 +96,14 @@ if __name__ == "__main__":
         match_yara(file, args.yara_scan)
     else:
       print("[!] Err: Invalid Yara rule path")
+
+  if args.check_vt:
+      for file in files:
+          time.sleep(0.5)
+          res = check_vt(file)
+          if res["found"]:
+              fs = "{0:>10} : {1}"
+              print(fs.format("malicious", res["malicious"]))
+              print(fs.format("classification", json.dumps(dict(res["classification"]), indent=2)))
+          else:
+              print("[!] Err: ",res["msg"])
